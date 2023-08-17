@@ -4,6 +4,7 @@
 #include <ESP8266WiFi.h>
 #include <ESP8266mDNS.h>
 #endif
+#include <ESPAsyncTCP.h>
 #include <ESPAsyncWebServer.h>
 #include <DNSServer.h>
 
@@ -11,7 +12,10 @@
 
 #define DEBUG_LN(x) Serial.println(x)
 
-AsyncWebServer server(80);
+// AsyncWebServer server(80);
+AsyncServer server = AsyncServer(12346);
+
+static void handleNewClient(void* arg, AsyncClient* client);
 
 void setup() {
     Serial.begin(115200);
@@ -46,20 +50,44 @@ void setup() {
     Serial.print("IP address:\t");
     Serial.println(WiFi.localIP());
 
-    server.on("/", HTTP_GET, [](AsyncWebServerRequest* request){
-        request->send(200, "text/plain", "Hello, World!");
-    });
-    server.begin();
+    // server.on("/", HTTP_GET, [](AsyncWebServerRequest* request){
+    //     request->send(200, "text/plain", "Hello, World!");
+    // });
+    // server.begin();
 
     // MDNS.end();
     DEBUG_LN("Starting mDNS");
     DEBUG_LN(MDNS.begin("chroma", WiFi.localIP()) ? "Success" : "Failure");
+    
     // MDNS.addService("http", "tcp", 80);
-    // MDNS.addService("chroma", "tcp", 80);
+    MDNS.addService("disco", "udp", 12345);
+    MDNS.addService("discoConnect", "tcp", 12346);
+
+    // start listening on tcp port 7050
+	server.onClient(&handleNewClient, NULL);
+	server.begin();
 }
 
 void loop() {
 #ifdef ESP8266
     MDNS.update();
 #endif
+}
+
+static void handleData(void* arg, AsyncClient* client, void *data, size_t len) {
+	Serial.printf("\n data received from client %s \n", client->remoteIP().toString().c_str());
+	Serial.write((uint8_t*)data, len);
+
+    if (strcmp((char*)data, "DISCO CONNECT\n") == 0 && client->space() > 32 && client->canSend()) {
+        char reply[] = "DISCO READY\n";
+		client->add(reply, strlen(reply));
+		client->send();
+    }
+}
+
+static void handleNewClient(void* arg, AsyncClient* client) {
+	Serial.printf("\n new client has been connected to server, ip: %s", client->remoteIP().toString().c_str());
+	
+	// register events
+	client->onData(&handleData, NULL);;
 }
