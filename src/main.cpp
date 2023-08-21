@@ -32,9 +32,7 @@ void setup() {
     // DEBUG_LN(WiFi.softAP("Disco Node") ? "Success" : "Failure");
 
     DEBUG_LN("Connecting to WiFi");
-    // while (wifi_status != WL_CONNECTED)
     WiFi.hostname("chroma");
-    //DEBUG_LN(WiFi.begin(WIFI_SSID, WIFI_PASS) == WL_CONNECTED ? "Success" : "Failure");
     WiFi.begin(WIFI_SSID, WIFI_PASS);           // Connect to the network
     Serial.print("Connecting to ");
     Serial.print(WIFI_SSID); Serial.println(" ...");
@@ -60,10 +58,11 @@ void setup() {
     DEBUG_LN(MDNS.begin("chroma", WiFi.localIP()) ? "Success" : "Failure");
     
     // MDNS.addService("http", "tcp", 80);
-    MDNS.addService("disco", "udp", 12345);
-    MDNS.addService("discoConnect", "tcp", 12346);
+    auto service = MDNS.addService(0 ,"disco", "udp", 12345);
+    MDNS.addServiceTxt(service, "device", "esp8266");
+    MDNS.addServiceTxt(service, "version", 1);
+    MDNS.addServiceTxt(service, "preferred-ipv", 4);
 
-    // start listening on tcp port 7050
 	server.onClient(&handleNewClient, NULL);
 	server.begin();
 }
