@@ -15,18 +15,18 @@
 #define DEBUG_LN(x) Serial.println(x)
 
 #define DISCO_PORT 12345
-#define CONFIG_PORT 12346
 #define MAX_DISCO_PACKET_SIZE 4096
 #define MAX_COLOR 255
 
+// TODO: web server for AP configuration
 // AsyncWebServer server(80);
-AsyncServer server = AsyncServer(CONFIG_PORT);
+
+// AsyncServer server = AsyncServer(CONFIG_PORT);
 Adafruit_NeoPixel pixels(150, 2, NEO_GRB + NEO_KHZ800);
 WiFiUDP udp;
 byte udp_packet_buffer[MAX_DISCO_PACKET_SIZE];
 
-
-static void handleNewClient(void* arg, AsyncClient* client);
+void process_udp_packet(int length);
 uint32_t convert_bytes_to_int(byte* array, int offset);
 float convert_bytes_to_float(byte* array, int offset);
 
@@ -34,6 +34,9 @@ void setup() {
     Serial.begin(115200);
     delay(10);
 
+    DEBUG_LN("TEST");
+
+    // TODO: AP configuration
     // DEBUG_LN("Configuring Access Point");
     // DEBUG_LN(WiFi.softAPConfig(
     //     IPAddress(4, 3, 2, 1),
@@ -61,21 +64,22 @@ void setup() {
     Serial.print("IP address:\t");
     Serial.println(WiFi.localIP());
 
+    // TODO: Web server for AP configuration
     // server.on("/", HTTP_GET, [](AsyncWebServerRequest* request){
     //     request->send(200, "text/plain", "Hello, World!");
     // });
     // server.begin();
 
-    // MDNS.end();
+    MDNS.end();
     DEBUG_LN("Starting mDNS");
-    DEBUG_LN(MDNS.begin("chroma", WiFi.localIP()) ? "Success" : "Failure");
+    DEBUG_LN(MDNS.begin("disco", WiFi.localIP()) ? "Success" : "Failure");
     
-    // MDNS.addService("http", "tcp", 80);
-    auto service = MDNS.addService(0 ,"disco", "udp", DISCO_PORT);
-    MDNS.addServiceTxt(service, "device", "esp8266");
-    MDNS.addServiceTxt(service, "version", 1);
-    MDNS.addServiceTxt(service, "preferred-ipv", 4);
-
+    // Add disco data protocol service
+    auto disco_udp_service = MDNS.addService(0 ,"disco", "udp", DISCO_PORT);
+    MDNS.addServiceTxt(disco_udp_service, "device", "esp8266");
+    MDNS.addServiceTxt(disco_udp_service, "version", 1);
+    MDNS.addServiceTxt(disco_udp_service, "preferred-ipv", 4);
+    
 	// server.onClient(&handleNewClient, NULL);
 	// server.begin();
 
@@ -94,55 +98,12 @@ void loop() {
     if (packetSize > 0) {
         // Serial.printf("Received %d bytes from %s, port %d\n", packetSize, udp.remoteIP().toString().c_str(), udp.remotePort());
         int len = udp.read(udp_packet_buffer, MAX_DISCO_PACKET_SIZE);
-        if (len < 12) {
-            Serial.printf("Got invalid packet of length: %d, wanting 12\n", len);
+        if (len < 4) {
+            Serial.printf("Got invalid packet of length: %d, wanting at least 4", len);
             return;
         }
-        uint32_t start = convert_bytes_to_int(udp_packet_buffer, 0);
-        uint32_t end = convert_bytes_to_int(udp_packet_buffer, 4);
-        uint32_t n_frames = convert_bytes_to_int(udp_packet_buffer, 8);
-        // Serial.printf("Got start: %d, end: %d, n_frames: %d\n", start, end, n_frames);
-        int pixels_per_frame = end - start;
-        int total_pixels = pixels_per_frame * n_frames;
-        if (len < 12 + total_pixels * 4) {
-            Serial.printf("Got invalid packet of length: %d, wanting: %d\n", len, 12 + total_pixels * 4);
-            return;
-        }
-        // TODO: deal with multiple frames
-        for (int i = 0; i < pixels_per_frame; i++) {
-            // float a = convert_bytes_to_float(udp_packet_buffer, 24 + i * 16);
-            // uint8_t r = convert_bytes_to_float(udp_packet_buffer, 12 + i * 16) * a * MAX_COLOR;
-            // uint8_t g = convert_bytes_to_float(udp_packet_buffer, 16 + i * 16) * a * MAX_COLOR;
-            // uint8_t b = convert_bytes_to_float(udp_packet_buffer, 20 + i * 16) * a * MAX_COLOR;
-
-            uint8_t r = udp_packet_buffer[12 + i * 4];
-            uint8_t g = udp_packet_buffer[13 + i * 4];
-            uint8_t b = udp_packet_buffer[14 + i * 4];
-            uint8_t a = udp_packet_buffer[15 + i * 4];
-            
-            // Serial.printf("Pixel color at %d is %d, %d, %d, %f\n", start + i, r, g, b, a);
-            pixels.setPixelColor(start + i, r, g, b);
-        }
-        pixels.show();
+        process_udp_packet(len);
     }
-}
-
-static void handleData(void* arg, AsyncClient* client, void *data, size_t len) {
-	Serial.printf("\n data received from client %s \n", client->remoteIP().toString().c_str());
-	Serial.write((uint8_t*)data, len);
-
-    if (strcmp((char*)data, "DISCO CONNECT\n") == 0 && client->space() > 32 && client->canSend()) {
-        char reply[] = "DISCO READY\n";
-		client->add(reply, strlen(reply));
-		client->send();
-    }
-}
-
-static void handleNewClient(void* arg, AsyncClient* client) {
-	Serial.printf("\n new client has been connected to server, ip: %s", client->remoteIP().toString().c_str());
-	
-	// register events
-	client->onData(&handleData, NULL);;
 }
 
 uint32_t convert_bytes_to_int(byte* array, int offset) {
@@ -158,6 +119,23 @@ uint32_t convert_bytes_to_int(byte* array, int offset) {
     return data.value;
 }
 
+uint32_t convert_bytes_to_long(byte* array, int offset) {
+    union byte_long {
+        byte array[8];
+        uint64_t value;
+    };
+    byte_long data;
+    data.array[0] = array[offset + 0];
+    data.array[1] = array[offset + 1];
+    data.array[2] = array[offset + 2];
+    data.array[3] = array[offset + 3];
+    data.array[4] = array[offset + 4];
+    data.array[5] = array[offset + 5];
+    data.array[6] = array[offset + 6];
+    data.array[7] = array[offset + 7];
+    return data.value;
+}
+
 float convert_bytes_to_float(byte* array, int offset) {
     union byte_float {
         byte array[4];
@@ -169,4 +147,52 @@ float convert_bytes_to_float(byte* array, int offset) {
     data.array[2] = array[offset + 2];
     data.array[3] = array[offset + 3];
     return data.value;
+}
+
+void process_ledA_packet(int len) {
+    if (len < 16) {
+        Serial.printf("Got invalid packet of length: %d, wanting 16\n", len);
+        return;
+    }
+    uint32_t start = convert_bytes_to_int(udp_packet_buffer, 4);
+    uint32_t end = convert_bytes_to_int(udp_packet_buffer, 8);
+    uint32_t n_frames = convert_bytes_to_int(udp_packet_buffer, 12);
+    int pixels_per_frame = end - start;
+    int total_pixels = pixels_per_frame * n_frames;
+    if (len < 16 + total_pixels * 4) {
+        Serial.printf("Got invalid packet of length: %d, wanting: %d\n", len, 16 + total_pixels * 4);
+        return;
+    }
+    // TODO: deal with multiple frames
+    for (int i = 0; i < pixels_per_frame; i++) {
+        uint8_t r = udp_packet_buffer[16 + i * 4];
+        uint8_t g = udp_packet_buffer[17 + i * 4];
+        uint8_t b = udp_packet_buffer[18 + i * 4];
+        uint8_t a = udp_packet_buffer[19 + i * 4];
+        pixels.setPixelColor(start + i, r, g, b);
+    }
+    pixels.show();
+}
+
+void process_heartbeat_packet(int len) {
+    if (len < 16) {
+        Serial.printf("Got invalid packet of length: %d, wanting 16\n", len);
+        return;
+    }
+    udp_packet_buffer[3] = 'B';
+    
+    uint64_t timestamp = convert_bytes_to_long(udp_packet_buffer, 4);
+    Serial.printf("Got heartbeat - timestamp: %lld\n", timestamp);
+
+    udp.beginPacket(udp.remoteIP(), udp.remotePort());
+    udp.write(udp_packet_buffer, len);
+    Serial.printf("Send response with code: %d\n", udp.endPacket());
+}
+
+void process_udp_packet(int length) {
+    std::string packet_type((char*) udp_packet_buffer, 4);
+    if (packet_type == "LEDA")
+        process_ledA_packet(length);
+    else if (packet_type == "HRBA")
+        process_heartbeat_packet(length);
 }
